@@ -1,89 +1,150 @@
+#include <FreeRTOS.h>
+#include <task.h>
 #include <stdio.h>
 #include "pico/stdlib.h"
-#include "hardware/spi.h"
 #include "hardware/i2c.h"
-#include "hardware/timer.h"
-#include "hardware/uart.h"
+#include "hardware/gpio.h"
 
-// SPI Defines
-// We are going to use SPI 0, and allocate it to the following GPIO pins
-// Pins can be changed, see the GPIO function select table in the datasheet for information on GPIO assignments
-#define SPI_PORT spi0
-#define PIN_MISO 16
-#define PIN_CS   17
-#define PIN_SCK  18
-#define PIN_MOSI 19
+#include "lcd_1602_i2c.h"
+#include "ssd1306_i2c.h"
+#include "webserver.h"         // Webserver-Task
+#include "usb_rndis_task.h"    // USB-RNDIS-Task
 
-// I2C defines
-// This example will use I2C0 on GPIO8 (SDA) and GPIO9 (SCL) running at 400KHz.
-// Pins can be changed, see the GPIO function select table in the datasheet for information on GPIO assignments
-#define I2C_PORT i2c0
-#define I2C_SDA 8
-#define I2C_SCL 9
+#ifdef __cplusplus
+extern "C" {
+#endif
+extern void vBlinkTaskCpp(void *pvParameters);
+#ifdef __cplusplus
+}
+#endif
 
-int64_t alarm_callback(alarm_id_t id, void *user_data) {
-    // Put your timeout handler code in here
-    return 0;
+#define MY_CUSTOM_LED_PIN 25
+#define WARN_LED 16
+
+#define BLINK_TASK_PRIORITY     (tskIDLE_PRIORITY + 1)
+#define LCD1602_TASK_PRIORITY   (tskIDLE_PRIORITY + 2)
+#define SSD1306_TASK_PRIORITY   (tskIDLE_PRIORITY + 3)
+#define RNDIS_TASK_PRIORITY     (tskIDLE_PRIORITY + 4)    // Falls Priorität gebraucht wird
+#define WEBSERVER_TASK_PRIORITY (tskIDLE_PRIORITY + 5)    // Falls Priorität gebraucht wird
+
+#define LCD1602_I2C_INSTANCE    i2c0
+#define LCD1602_I2C_SDA_PIN     4
+#define LCD1602_I2C_SCL_PIN     5
+#define LCD1602_I2C_ADDR        0x27
+
+#define SSD1306_I2C_INSTANCE    i2c0
+#define SSD1306_I2C_SDA_PIN     4
+#define SSD1306_I2C_SCL_PIN     5
+#define SSD1306_OLED_ADDR       0x3C
+
+lcd_1602_i2c_t my_lcd1602;
+uint8_t ssd1306_frame_buffer[SSD1306_BUF_LEN];
+struct render_area ssd1306_full_frame_area = {
+    .start_col = 0,
+    .end_col = SSD1306_WIDTH - 1,
+    .start_page = 0,
+    .end_page = SSD1306_NUM_PAGES - 1
+};
+
+void vLcd1602Task(void *pvParameters) {
+    lcd_init(&my_lcd1602, LCD1602_I2C_INSTANCE, LCD1602_I2C_ADDR);
+    printf("LCD 1602 initialization completed in task.\n");
+
+    lcd_clear(&my_lcd1602);
+    lcd_set_cursor(&my_lcd1602, 0, 0);
+    lcd_write_string(&my_lcd1602, "Console > ");
+    lcd_set_cursor(&my_lcd1602, 1, 0);
+    lcd_write_string(&my_lcd1602, "Started");
+
+    for (;;) {
+        static int dot_state = 0;
+        lcd_set_cursor(&my_lcd1602, 1, 15);
+        lcd_write_char(&my_lcd1602, dot_state ? '.' : ' ');
+        dot_state = !dot_state;
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
 }
 
-// UART defines
-// By default the stdout UART is `uart0`, so we will use the second one
-#define UART_ID uart1
-#define BAUD_RATE 115200
+void vSsd1306Task(void *pvParameters) {
+    ssd1306_init(SSD1306_I2C_INSTANCE, SSD1306_I2C_SDA_PIN, SSD1306_I2C_SCL_PIN);
+    printf("SSD1306 OLED initialization completed in task.\n");
 
-// Use pins 4 and 5 for UART1
-// Pins can be changed, see the GPIO function select table in the datasheet for information on GPIO assignments
-#define UART_TX_PIN 4
-#define UART_RX_PIN 5
+    ssd1306_calc_render_area_buflen(&ssd1306_full_frame_area);
+    memset(ssd1306_frame_buffer, 0, SSD1306_BUF_LEN);
+    ssd1306_render(ssd1306_frame_buffer, &ssd1306_full_frame_area);
 
-
-
-int main()
-{
-    stdio_init_all();
-
-    // SPI initialisation. This example will use SPI at 1MHz.
-    spi_init(SPI_PORT, 1000*1000);
-    gpio_set_function(PIN_MISO, GPIO_FUNC_SPI);
-    gpio_set_function(PIN_CS,   GPIO_FUNC_SIO);
-    gpio_set_function(PIN_SCK,  GPIO_FUNC_SPI);
-    gpio_set_function(PIN_MOSI, GPIO_FUNC_SPI);
-    
-    // Chip select is active-low, so we'll initialise it to a driven-high state
-    gpio_set_dir(PIN_CS, GPIO_OUT);
-    gpio_put(PIN_CS, 1);
-    // For more examples of SPI use see https://github.com/raspberrypi/pico-examples/tree/master/spi
-
-    // I2C Initialisation. Using it at 400Khz.
-    i2c_init(I2C_PORT, 400*1000);
-    
-    gpio_set_function(I2C_SDA, GPIO_FUNC_I2C);
-    gpio_set_function(I2C_SCL, GPIO_FUNC_I2C);
-    gpio_pull_up(I2C_SDA);
-    gpio_pull_up(I2C_SCL);
-    // For more examples of I2C use see https://github.com/raspberrypi/pico-examples/tree/master/i2c
-
-    // Timer example code - This example fires off the callback after 2000ms
-    add_alarm_in_ms(2000, alarm_callback, NULL, false);
-    // For more examples of timer use see https://github.com/raspberrypi/pico-examples/tree/master/timer
-
-    // Set up our UART
-    uart_init(UART_ID, BAUD_RATE);
-    // Set the TX and RX pins by using the function select on the GPIO
-    // Set datasheet for more information on function select
-    gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
-    gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
-    
-    // Use some the various UART functions to send out data
-    // In a default system, printf will also output via the default UART
-    
-    // Send out a string, with CR/LF conversions
-    uart_puts(UART_ID, " Hello, UART!\n");
-    
-    // For more examples of UART use see https://github.com/raspberrypi/pico-examples/tree/master/uart
-
-    while (true) {
-        printf("Hello, world!\n");
-        sleep_ms(1000);
+    if (SSD1306_HEIGHT == 64) {
+        ssd1306_write_string(ssd1306_frame_buffer, 0, 32, "BlackzCoreOS");
+        ssd1306_write_string(ssd1306_frame_buffer, 0, 40, "Loading...");
+    } else {
+        ssd1306_write_string(ssd1306_frame_buffer, 0, 0, "BlackzCoreOS");
+        ssd1306_write_string(ssd1306_frame_buffer, 0, 8, "Loading...");
     }
+    ssd1306_render(ssd1306_frame_buffer, &ssd1306_full_frame_area);
+
+    int counter = 0;
+    for (;;) {
+        int y_offset = (SSD1306_HEIGHT == 64) ? 40 : 8;
+        memset(ssd1306_frame_buffer + (y_offset / SSD1306_PAGE_HEIGHT) * SSD1306_WIDTH, 0, SSD1306_WIDTH);
+        ssd1306_write_string(ssd1306_frame_buffer, 0, y_offset, "Loading...");
+
+        for (int i = 0; i < (counter % 4); i++) {
+            ssd1306_write_char(ssd1306_frame_buffer, 8 * 9 + i * 8, y_offset, '.');
+        }
+        ssd1306_render(ssd1306_frame_buffer, &ssd1306_full_frame_area);
+        counter++;
+        vTaskDelay(pdMS_TO_TICKS(250));
+    }
+}
+
+int main(void) {
+    stdio_init_all();
+    printf("FreeRTOS Infinity RTS Core - Start\n");
+
+    // I2C initialisieren (shared bus für LCD1602 & SSD1306)
+    i2c_init(LCD1602_I2C_INSTANCE, 100 * 1000);
+    gpio_set_function(LCD1602_I2C_SDA_PIN, GPIO_FUNC_I2C);
+    gpio_set_function(LCD1602_I2C_SCL_PIN, GPIO_FUNC_I2C);
+    gpio_pull_up(LCD1602_I2C_SDA_PIN);
+    gpio_pull_up(LCD1602_I2C_SCL_PIN);
+    printf("I2C0 initialized on SDA:%d, SCL:%d\n", LCD1602_I2C_SDA_PIN, LCD1602_I2C_SCL_PIN);
+
+    // Blink-Tasks erstellen
+    if (xTaskCreate(vBlinkTaskCpp, "BlinkTask_LED25", configMINIMAL_STACK_SIZE * 3, (void *)MY_CUSTOM_LED_PIN, BLINK_TASK_PRIORITY, NULL) != pdPASS) {
+        printf("Error: BlinkTask_LED25 konnte nicht erstellt werden!\n");
+        while (1) {}
+    }
+    if (xTaskCreate(vBlinkTaskCpp, "BlinkTask_WARNLED16", configMINIMAL_STACK_SIZE * 3, (void *)WARN_LED, BLINK_TASK_PRIORITY, NULL) != pdPASS) {
+        printf("Error: BlinkTask_WARNLED16 konnte nicht erstellt werden!\n");
+        while (1) {}
+    }
+
+    // LCD1602-Task
+    if (xTaskCreate(vLcd1602Task, "Lcd1602Task", configMINIMAL_STACK_SIZE * 6, NULL, LCD1602_TASK_PRIORITY, NULL) != pdPASS) {
+        printf("Error: Lcd1602Task konnte nicht erstellt werden!\n");
+        while (1) {}
+    }
+
+    // SSD1306-Task
+    if (xTaskCreate(vSsd1306Task, "Ssd1306Task", configMINIMAL_STACK_SIZE * 16, NULL, SSD1306_TASK_PRIORITY, NULL) != pdPASS) {
+        printf("Error: Ssd1306Task konnte nicht erstellt werden!\n");
+        while (1) {}
+    }
+
+    // USB-RNDIS-Task starten
+    start_usb_rndis_task();
+
+    // Webserver-Task starten
+    start_webserver_task();
+
+    // FreeRTOS Scheduler starten
+    vTaskStartScheduler();
+
+    // Sollte niemals hier landen
+    printf("Fehler: Scheduler wurde beendet!\n");
+    while (1) {
+        tight_loop_contents();
+    }
+
+    return 0;
 }

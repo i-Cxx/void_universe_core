@@ -25,6 +25,14 @@ endif()
 # ====================================================================================
 set(PICO_BOARD pico CACHE STRING "Board type")
 
+
+# set(ENV{PICO_SDK_PATH} "${CMAKE_SOURCE_DIR}/pico-sdk")
+
+# Set flags and directory variables
+# set(FREERTOS_CFG_DIRECTORY "${CMAKE_SOURCE_DIR}/Config")
+# set(FREERTOS_SRC_DIRECTORY "${CMAKE_SOURCE_DIR}/FreeRTOS-Kernel")
+
+
 # Pull in Raspberry Pi Pico SDK (must be before project)
 include(pico_sdk_import.cmake)
 
@@ -35,11 +43,43 @@ pico_sdk_init()
 
 # Add executable. Default name is the project name, version 0.1
 
-link_directories()(void_universe_core PUBLIC
-    ${CMAKE_SOURCE_DIR}/src
+# Add FreeRTOS as a library
+# add_library(FreeRTOS STATIC
+#     ${FREERTOS_SRC_DIRECTORY}/event_groups.c
+#     ${FREERTOS_SRC_DIRECTORY}/list.c
+#     ${FREERTOS_SRC_DIRECTORY}/queue.c
+#     ${FREERTOS_SRC_DIRECTORY}/stream_buffer.c
+#     ${FREERTOS_SRC_DIRECTORY}/tasks.c
+#     ${FREERTOS_SRC_DIRECTORY}/timers.c
+#     ${FREERTOS_SRC_DIRECTORY}/portable/MemMang/heap_3.c
+#     ${FREERTOS_SRC_DIRECTORY}/portable/GCC/ARM_CM0/port.c
+# )
+
+# Build FreeRTOS
+# target_include_directories(FreeRTOS PUBLIC
+#     ${FREERTOS_CFG_DIRECTORY}/
+#     ${FREERTOS_SRC_DIRECTORY}/include
+#     ${FREERTOS_SRC_DIRECTORY}/portable/GCC/ARM_CM0
+# )
+
+
+add_library(freertos_config INTERFACE)
+target_include_directories(freertos_config INTERFACE
+    ${CMAKE_SOURCE_DIR}/include
 )
 
-add_executable(void_universe_core void_universe_core.c )
+# Webserver Subdirectory einbinden (erst hier, weil in src/)
+add_subdirectory(webserver)
+
+
+
+
+add_executable(void_universe_core 
+                void_universe_core.c 
+)
+
+
+
 
 pico_set_program_name(void_universe_core "void_universe_core")
 pico_set_program_version(void_universe_core "0.1")
@@ -59,10 +99,42 @@ target_include_directories(void_universe_core PRIVATE
 
 # Add any user requested libraries
 target_link_libraries(void_universe_core 
+        pico_stdlib
         hardware_spi
+        hardware_gpio
         hardware_i2c
         hardware_timer
+        pico_stdlib
+    
+    
+        freertos_kernel      
+        freertos_config     
+
+        lwip
+        lwipcore
+        lwipallapps
+        
+        webserver     
+
+        
+        tinyusb_device
+        
+        led_lib
+        lcd1602_lib
+        ssd1306_lib
         )
 
+
+add_compile_definitions($<$<CONFIG:Debug>:DEBUG=1>)
+# Compiler Optionen
+target_compile_options(infinity_rts PRIVATE -Wall -Wextra -O2)
+
+# UART für printf aktivieren
+pico_enable_stdio_uart(infinity_rts 1)
+pico_enable_stdio_usb(infinity_rts 0)
+
+
 pico_add_extra_outputs(void_universe_core)
+
+
 
